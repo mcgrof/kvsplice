@@ -38,6 +38,50 @@ Spline→PCA:       V → Spline(V) → PCA(Z) → compressed (better!)
 3. **Better compression**: Matches or beats plain PCA at all tested k values
 4. **Monotonic per-dimension**: Preserves ordering, numerically stable
 
+## Geometric Intuition: Manifolds, Charts, and Smooth Connections
+
+Understanding KVSplice requires thinking about **manifolds** (curved geometric spaces) and how we approximate them.
+
+### PCA = Local Charting of the Manifold
+
+PCA takes a cloud of high-dimensional KV vectors and finds a **local coordinate system** (a low-rank basis) that best describes their shape.
+
+Each PCA region is like a **flat tangent patch on a curved manifold** — it captures local variance (directions of greatest change).
+
+Think of it like mapping the Earth:
+- The Earth is curved (a 2D manifold in 3D space)
+- Flat maps work well for small regions (local PCA patches)
+- But you can't flatten the whole Earth without distortion
+
+**So, PCA gives you samples of geometric spaces** — local linear approximations of the global semantic surface.
+
+### Splines = Connecting the Charts Smoothly
+
+When you move from one PCA patch to another (e.g., across timesteps, tokens, or context segments), you don't want sharp transitions.
+
+**Splines give you a way to connect these local subspaces with controlled smoothness** — enforcing continuity in:
+- **Position (C⁰)**: No jumps between regions
+- **Direction (C¹)**: Smooth flow of meaning (matching tangent directions)
+- **Curvature (C²)**: Smooth acceleration of reasoning (matching curvature)
+
+This "connection" ensures that as you traverse the latent space (e.g., during attention replay or KV retrieval), you **move smoothly across the manifold**, not by jumping between disjoint planes.
+
+### Visual Analogy
+
+```
+Without splines (plain PCA):
+  Region A: ___/‾‾‾     ← Sharp corner = discontinuity
+  Region B:        ‾‾‾\___
+
+With splines (KVSplice):
+  Region A: ___/‾‾‾‾‾∼∼∼‾‾‾\___  ← Smooth curve = continuous flow
+  Region B:     (smooth transition)
+```
+
+**Key insight**: KVSplice learns the **geometry** of how semantic spaces connect, not just their local structure. This makes it more than compression — it's a **continuous representation of memory geometry**.
+
+For a more detailed visual explanation of manifold charting, PCA patches, and smooth connections, see [manifold_diagram.txt](manifold_diagram.txt).
+
 ## Experimental Results
 
 Tested on GeometricMix synthetic dataset (d=128, curved manifold with 3% noise).
@@ -64,6 +108,38 @@ k=64: PCA MSE=0.000451,  SplinePCA MSE=0.000451  (Δ=0.000000)  ✓
 ```
 
 **SplinePCA never worse than plain PCA, often better at low k.**
+
+### Measuring Compression Quality
+
+When evaluating compression, you need to balance **compression ratio** against **reconstruction fidelity**. Here are the key metrics:
+
+**Basic metrics:**
+- **D**: Original dimension (e.g., 128 for GPT-2 head_dim)
+- **k**: Compressed dimension (bottleneck size)
+- **r**: Reconstruction correlation (Pearson r between original and reconstructed)
+- **Compression ratio**: D/k (e.g., 128/16 = 8×)
+
+**Combined quality metrics:**
+
+If you want a single metric that balances size and fidelity:
+
+**Effective quality score** = r × k / D
+
+or equivalently:
+
+**Information per stored dimension** = r / (k/D) = r·D / k
+
+These give you a feel for "information density per dimension retained."
+
+**Example comparison:**
+
+| D   | k  | r    | Compression | Info density (r·D/k) |
+|-----|-----|------|-------------|---------------------|
+| 128 | 16  | 0.95 | 8×          | 7.6                 |
+| 128 | 8   | 0.85 | 16×         | 13.6                |
+| 128 | 32  | 0.99 | 4×          | 3.96                |
+
+A higher compression ratio (16×) with slightly lower fidelity (r=0.85) can yield better information density (13.6) than a lower compression ratio (4×) with high fidelity (r=0.99, density=3.96). This helps you make informed trade-offs between memory savings and quality.
 
 #### Affine Flow→PCA vs PCA (from affineflow_pca_experiment.py)
 
@@ -122,6 +198,8 @@ This Spline→PCA algorithm has been integrated into [knlp](https://github.com/m
 
 ## Algorithm Details
 
+For an excellent introduction to spline theory and continuity, see [this video on spline continuity](https://www.youtube.com/watch?v=jvPPXbo87ds).
+
 ### Monotonic Spline Architecture
 
 ```python
@@ -154,6 +232,8 @@ class PWLSpline(nn.Module):
 ```
 
 **Monotonicity guarantee**: All slopes are positive (via softplus), so y increases with x.
+
+**Continuity guarantee**: The piecewise-linear spline guarantees at least **C⁰ continuity** (continuous function values at knot boundaries). The function is continuous everywhere but has discontinuous derivatives at the knots.
 
 ### Training Objective
 
@@ -193,11 +273,16 @@ for epoch in range(epochs):
 
 ## Future Directions
 
-1. **Adaptive geometry**: Update spline during training (expensive)
-2. **Per-head geometry**: Different splines for different attention heads
-3. **K compression**: Apply to keys as well as values
-4. **Block-diagonal splines**: Exploit local structure in V vectors
-5. **Quantization**: Combine geometric compression with int8 quantization
+1. **Higher-order continuity**: Current implementation guarantees C⁰ continuity. Future work:
+   - **C¹ regularization** → Match tangent directions between PCA regions (smooth flow of meaning)
+   - **C² regularization** → Match curvature (smooth acceleration of reasoning)
+   - Goal: Make KVSplice not just a compression method, but a **continuous representation of memory geometry**
+
+2. **Adaptive geometry**: Update spline during training (expensive)
+3. **Per-head geometry**: Different splines for different attention heads
+4. **K compression**: Apply to keys as well as values
+5. **Block-diagonal splines**: Exploit local structure in V vectors
+6. **Quantization**: Combine geometric compression with int8 quantization
 
 ## Citation
 

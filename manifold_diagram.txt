@@ -1,0 +1,87 @@
+KVSplice: Geometric Intuition
+==============================
+
+1. RAW MANIFOLD (Curved semantic space where KV vectors live)
+
+         ╭────────╮
+       ╱            ╲
+      │   Semantic   │  ← High-dimensional curved surface
+      │   Manifold   │     (where attention vectors live)
+       ╲            ╱
+         ╰────────╯
+
+
+2. PCA ONLY: Local flat patches (discontinuous)
+
+    Patch 1         Patch 2         Patch 3
+    ┌─────┐         ┌─────┐         ┌─────┐
+    │ ─── │   GAP!  │ ─── │   GAP!  │ ─── │
+    │ ─── │  ╳╳╳╳╳  │ ─── │  ╳╳╳╳╳  │ ─── │
+    └─────┘         └─────┘         └─────┘
+
+    Each patch is a good LOCAL approximation,
+    but transitions are SHARP (discontinuous)
+
+
+3. SPLINE + PCA: Smooth connection between patches
+
+    ╭──────╮      ╭──────╮      ╭──────╮
+    │ ─ ─ ─│∼∼∼∼∼│─ ─ ─ │∼∼∼∼∼│─ ─ ─ │
+    │ ─ ─ ─│∼∼∼∼∼│─ ─ ─ │∼∼∼∼∼│─ ─ ─ │
+    ╰──────╯      ╰──────╯      ╰──────╯
+       ↑             ↑             ↑
+     PCA patch   Spline      PCA patch
+                 smooth
+                transition
+
+    Splines PRE-WARP the space so that PCA patches
+    connect smoothly (continuous derivatives)
+
+
+4. CONTINUITY LEVELS (Future work)
+
+   C⁰: Position continuous
+   ────────────────────────  ← No gaps, but can have kinks
+              ╱
+             ╱
+
+   C¹: Direction continuous
+   ────────────╭───────────  ← Smooth flow, no kinks
+
+   C²: Curvature continuous
+   ─────────∼∼∼∼∼──────────  ← Smooth acceleration
+
+
+5. THE FULL PIPELINE
+
+   Original      Spline        PCA          Compressed
+   Space      Warping       Projection       Latent
+
+   [V]  ────►  [Z]  ────►  [Z_k]  ────►   Memory
+   128D        128D         16D            (8× smaller)
+    ↑           ↑            ↑
+    │           │            │
+  Curved    Straightened   Low-rank
+  manifold   manifold      approximation
+
+
+  Key: Spline learns to "straighten" the curved manifold
+       so that PCA (which assumes flatness) works better!
+
+
+6. SEMANTIC INTERPRETATION
+
+   Token 1    Token 2    Token 3    Token 4
+      •─────────•─────────•─────────•
+      │         │         │         │
+   Attend    Attend    Attend    Attend
+   to past   to past   to past   to past
+
+   Without KVSplice:
+   • Each attention might "jump" between disconnected subspaces
+   • Semantic flow has sharp transitions
+
+   With KVSplice:
+   • Attention flows smoothly through continuous geometry
+   • Gradual semantic transitions (like following a curve)
+   • Better interpolation between cached states
