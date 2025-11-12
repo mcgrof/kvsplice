@@ -23,17 +23,23 @@ import torch.nn.functional as F
 # Dataset (same as spline)
 # -------------------------
 
+
 def make_geometric_dataset(n: int = 6000, d: int = 128, seed: int = 13) -> np.ndarray:
     rng = np.random.default_rng(seed)
     t = rng.random((n, 1))
     tri = 0.5 * t * (t + 1.0)
-    atoms = np.concatenate([
-        np.ones_like(t),
-        t, t**2, tri,
-        np.sqrt(np.clip(t, 1e-6, 1.0)),
-        np.sin(2 * np.pi * t),
-        np.cos(2 * np.pi * t),
-    ], axis=1)  # [n, 7]
+    atoms = np.concatenate(
+        [
+            np.ones_like(t),
+            t,
+            t**2,
+            tri,
+            np.sqrt(np.clip(t, 1e-6, 1.0)),
+            np.sin(2 * np.pi * t),
+            np.cos(2 * np.pi * t),
+        ],
+        axis=1,
+    )  # [n, 7]
 
     A = 48
     W_atoms = rng.normal(0, 1, (atoms.shape[1], A))
@@ -49,9 +55,11 @@ def make_geometric_dataset(n: int = 6000, d: int = 128, seed: int = 13) -> np.nd
     X += rng.normal(0, 0.03, X.shape)
     return X.astype(np.float32)
 
+
 # -------------------------
 # PCA helpers
 # -------------------------
+
 
 def pca_fit(x: torch.Tensor):
     mu = x.mean(dim=0, keepdim=True)
@@ -59,15 +67,20 @@ def pca_fit(x: torch.Tensor):
     U, S, Vh = torch.linalg.svd(xc, full_matrices=False)
     return mu, Vh
 
-def pca_proj_recon(x: torch.Tensor, mu: torch.Tensor, Vh: torch.Tensor, k: int) -> torch.Tensor:
+
+def pca_proj_recon(
+    x: torch.Tensor, mu: torch.Tensor, Vh: torch.Tensor, k: int
+) -> torch.Tensor:
     Vk = Vh[:k].T
     z = (x - mu) @ Vk
     xh = z @ Vk.T + mu
     return xh
 
+
 # -------------------------
 # RealNVP-like flow (stable)
 # -------------------------
+
 
 class ZeroInitLinear(nn.Linear):
     def reset_parameters(self):
@@ -75,18 +88,26 @@ class ZeroInitLinear(nn.Linear):
         if self.bias is not None:
             nn.init.zeros_(self.bias)
 
+
 class TinyMLP(nn.Module):
-    def __init__(self, d_in: int, d_out: int, hidden: int = 128, zero_last: bool = False):
+    def __init__(
+        self, d_in: int, d_out: int, hidden: int = 128, zero_last: bool = False
+    ):
         super().__init__()
         self.fc1 = nn.Linear(d_in, hidden)
         self.fc2 = nn.Linear(hidden, hidden)
-        self.fc3 = ZeroInitLinear(hidden, d_out) if zero_last else nn.Linear(hidden, d_out)
+        self.fc3 = (
+            ZeroInitLinear(hidden, d_out) if zero_last else nn.Linear(hidden, d_out)
+        )
         for m in [self.fc1, self.fc2]:
-            nn.init.kaiming_uniform_(m.weight, a=0.2); nn.init.zeros_(m.bias)
+            nn.init.kaiming_uniform_(m.weight, a=0.2)
+            nn.init.zeros_(m.bias)
+
     def forward(self, x):
         x = F.gelu(self.fc1(x))
         x = F.gelu(self.fc2(x))
         return self.fc3(x)
+
 
 class AffineCoupling(nn.Module):
     """
@@ -94,9 +115,10 @@ class AffineCoupling(nn.Module):
     y2 = x2 * exp(s(x1)) + t(x1), with s bounded via tanh -> clamp
     Start exactly at identity: s_net and t_net last layers zero-initialized.
     """
+
     def __init__(self, d: int, hidden: int, mask: torch.Tensor, s_clip: float = 1.0):
         super().__init__()
-        self.register_buffer("mask", mask)         # [d] bool
+        self.register_buffer("mask", mask)  # [d] bool
         d_in = int(mask.sum().item())
         d_out = d - d_in
         # ZERO-INIT -> identity at start
@@ -132,17 +154,23 @@ class AffineCoupling(nn.Module):
         x2 = (y2 - t) * torch.exp(-s)
         return self._merge(y1, x2, y)
 
+
 class Permute(nn.Module):
     """Fixed channel permutation (and its inverse)."""
+
     def __init__(self, d: int, perm: torch.Tensor):
         super().__init__()
-        self.register_buffer("perm", perm)               # [d]
+        self.register_buffer("perm", perm)  # [d]
         inv = torch.empty_like(perm)
         inv[perm] = torch.arange(d, device=perm.device)
         self.register_buffer("inv", inv)
 
-    def forward(self, x):  return x[:, self.perm]
-    def inverse(self, y):  return y[:, self.inv]
+    def forward(self, x):
+        return x[:, self.perm]
+
+    def inverse(self, y):
+        return y[:, self.inv]
+
 
 class Flow(nn.Module):
     def __init__(self, d: int, blocks: int = 3, hidden: int = 128, seed: int = 0):
@@ -150,7 +178,8 @@ class Flow(nn.Module):
         torch.manual_seed(seed)
         # alternating masks
         half = d // 2
-        m0 = torch.zeros(d, dtype=torch.bool); m0[:half] = True
+        m0 = torch.zeros(d, dtype=torch.bool)
+        m0[:half] = True
         m1 = ~m0
         masks = [m0 if i % 2 == 0 else m1 for i in range(blocks)]
         # random permutations between blocks
@@ -170,12 +199,16 @@ class Flow(nn.Module):
 
     def inverse(self, y):
         for layer in reversed(self.layers):
-            y = layer.inverse(y) if hasattr(layer, "inverse") else layer(y)  # Permute has inverse
+            y = (
+                layer.inverse(y) if hasattr(layer, "inverse") else layer(y)
+            )  # Permute has inverse
         return y
+
 
 # -------------------------
 # Train flow to be PCA-k friendly (stable)
 # -------------------------
+
 
 def pca_k_in_latent(flow, x, k):
     with torch.no_grad():
@@ -183,6 +216,7 @@ def pca_k_in_latent(flow, x, k):
         mu, Vh = pca_fit(z)
         Vk = Vh[:k].T
     return mu, Vk
+
 
 def train_flow_for_k(
     flow: Flow,
@@ -193,12 +227,14 @@ def train_flow_for_k(
     batch_size: int = 256,
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
-    lam_whiten: float = 1e-4,   # tiny whitening regularizer
+    lam_whiten: float = 1e-4,  # tiny whitening regularizer
     grad_clip: float = 1.0,
 ):
     ds = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(train),
-        batch_size=batch_size, shuffle=True, drop_last=True
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
     )
     opt = torch.optim.AdamW(flow.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -216,7 +252,7 @@ def train_flow_for_k(
             z_detach = z.detach()
             m = z_detach.mean(dim=0)
             v = z_detach.var(dim=0, unbiased=False)
-            whiten = (m.pow(2).mean() + (v - 1.0).pow(2).mean())
+            whiten = m.pow(2).mean() + (v - 1.0).pow(2).mean()
 
             loss = recon + lam_whiten * whiten
             opt.zero_grad(set_to_none=True)
@@ -232,13 +268,19 @@ def train_flow_for_k(
                 Vk_t = Vh[:k_target].T
                 xrt = flow.inverse((zt - mu) @ Vk_t @ Vk_t.T + mu)
                 mse_t = F.mse_loss(xrt, test).item()
-            print(f"[Flow] epoch {ep:02d}  train_mse={np.mean(losses):.6f}  test_mse={mse_t:.6f}")
+            print(
+                f"[Flow] epoch {ep:02d}  train_mse={np.mean(losses):.6f}  test_mse={mse_t:.6f}"
+            )
+
 
 # -------------------------
 # Eval sweep
 # -------------------------
 
-def evaluate_sweep(train: torch.Tensor, test: torch.Tensor, flow: Flow, ks: List[int]) -> List[dict]:
+
+def evaluate_sweep(
+    train: torch.Tensor, test: torch.Tensor, flow: Flow, ks: List[int]
+) -> List[dict]:
     rows = []
     with torch.no_grad():
         mu_x, Vh_x = pca_fit(train)
@@ -256,23 +298,30 @@ def evaluate_sweep(train: torch.Tensor, test: torch.Tensor, flow: Flow, ks: List
             rows.append({"k": k, "test_mse_PCA": mse_p, "test_mse_FlowPCA": mse_f})
     return rows
 
-def print_and_save(rows: List[dict], out_csv: str = "results_affineflow_pca.csv") -> None:
+
+def print_and_save(
+    rows: List[dict], out_csv: str = "results_affineflow_pca.csv"
+) -> None:
     print("\n=== Test MSE: PCA vs Flow->PCA (lower is better) ===")
     print(f"{'k':>4}  {'PCA':>14}  {'FlowPCA':>14}  {'delta(FlowPCA-PCA)':>22}")
     for r in rows:
         delta = r["test_mse_FlowPCA"] - r["test_mse_PCA"]
-        print(f"{r['k']:4d}  {r['test_mse_PCA']:14.6f}  {r['test_mse_FlowPCA']:14.6f}  {delta:22.6f}")
+        print(
+            f"{r['k']:4d}  {r['test_mse_PCA']:14.6f}  {r['test_mse_FlowPCA']:14.6f}  {delta:22.6f}"
+        )
 
     with open(out_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["k","test_mse_PCA","test_mse_FlowPCA"])
+        w = csv.DictWriter(f, fieldnames=["k", "test_mse_PCA", "test_mse_FlowPCA"])
         w.writeheader()
         for r in rows:
             w.writerow(r)
     print(f"\nSaved CSV -> {out_csv}")
 
+
 # -------------------------
 # Main
 # -------------------------
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -283,25 +332,30 @@ def main():
     ap.add_argument("--k-train", type=int, default=16)
     ap.add_argument("--blocks", type=int, default=3)
     ap.add_argument("--hidden", type=int, default=128)
-    ap.add_argument("--device", type=str, default="cpu", choices=["cpu","cuda"])
+    ap.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"])
     ap.add_argument("--fp16", action="store_true")
     args = ap.parse_args()
 
-    torch.manual_seed(5); np.random.seed(5)
+    torch.manual_seed(5)
+    np.random.seed(5)
 
     X = make_geometric_dataset(n=args.n, d=args.d, seed=args.seed)
     X_train, X_test = X[: int(0.75 * len(X))], X[int(0.75 * len(X)) :]
     want_cuda = (args.device == "cuda") and torch.cuda.is_available()
     device = torch.device("cuda" if want_cuda else "cpu")
     if want_cuda:
-        try: torch.set_float32_matmul_precision("medium")
-        except Exception: pass
+        try:
+            torch.set_float32_matmul_precision("medium")
+        except Exception:
+            pass
 
     dtype = torch.float16 if (args.fp16 and want_cuda) else torch.float32
     train = torch.tensor(X_train, device=device, dtype=dtype)
-    test  = torch.tensor(X_test,  device=device, dtype=dtype)
+    test = torch.tensor(X_test, device=device, dtype=dtype)
 
-    flow = Flow(d=args.d, blocks=args.blocks, hidden=args.hidden, seed=42).to(device=device, dtype=dtype)
+    flow = Flow(d=args.d, blocks=args.blocks, hidden=args.hidden, seed=42).to(
+        device=device, dtype=dtype
+    )
 
     # Train with stable settings
     train_flow_for_k(
@@ -319,6 +373,7 @@ def main():
     ks = [8, 12, 16, 24, 32, 48, 64]
     rows = evaluate_sweep(train, test, flow, ks)
     print_and_save(rows, out_csv="results_affineflow_pca.csv")
+
 
 if __name__ == "__main__":
     main()

@@ -19,17 +19,23 @@ import torch.nn.functional as F
 # Dataset
 # -------------------------
 
+
 def make_geometric_dataset(n: int = 6000, d: int = 128, seed: int = 13) -> np.ndarray:
     rng = np.random.default_rng(seed)
     t = rng.random((n, 1))
     tri = 0.5 * t * (t + 1.0)
-    atoms = np.concatenate([
-        np.ones_like(t),
-        t, t**2, tri,
-        np.sqrt(np.clip(t, 1e-6, 1.0)),
-        np.sin(2 * np.pi * t),
-        np.cos(2 * np.pi * t),
-    ], axis=1)  # [n, 7]
+    atoms = np.concatenate(
+        [
+            np.ones_like(t),
+            t,
+            t**2,
+            tri,
+            np.sqrt(np.clip(t, 1e-6, 1.0)),
+            np.sin(2 * np.pi * t),
+            np.cos(2 * np.pi * t),
+        ],
+        axis=1,
+    )  # [n, 7]
 
     A = 48
     W_atoms = rng.normal(0, 1, (atoms.shape[1], A))
@@ -45,9 +51,11 @@ def make_geometric_dataset(n: int = 6000, d: int = 128, seed: int = 13) -> np.nd
     X += rng.normal(0, 0.03, X.shape)
     return X.astype(np.float32)
 
+
 # -------------------------
 # PCA helpers
 # -------------------------
+
 
 def pca_fit(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     mu = x.mean(dim=0, keepdim=True)
@@ -55,15 +63,20 @@ def pca_fit(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     U, S, Vh = torch.linalg.svd(xc, full_matrices=False)
     return mu, Vh
 
-def pca_proj_recon(x: torch.Tensor, mu: torch.Tensor, Vh: torch.Tensor, k: int) -> torch.Tensor:
+
+def pca_proj_recon(
+    x: torch.Tensor, mu: torch.Tensor, Vh: torch.Tensor, k: int
+) -> torch.Tensor:
     Vk = Vh[:k].T
     z = (x - mu) @ Vk
     xh = z @ Vk.T + mu
     return xh
 
+
 # -------------------------
 # Monotone PWL spline (per-dim, invertible)
 # -------------------------
+
 
 class PWLSpline(nn.Module):
     """
@@ -73,6 +86,7 @@ class PWLSpline(nn.Module):
     - Final per-dim affine scale/shift (positive scale).
     - Inverse is analytic per segment.
     """
+
     def __init__(self, x_knots: torch.Tensor):
         super().__init__()
         # ensure contiguous storage once up front
@@ -86,10 +100,12 @@ class PWLSpline(nn.Module):
 
     def _slopes_and_yk(self):
         xk = self.xk  # [d, K] (contiguous)
-        seg_dx = xk[:, 1:] - xk[:, :-1]             # [d, K-1]
+        seg_dx = xk[:, 1:] - xk[:, :-1]  # [d, K-1]
         slopes = F.softplus(self.delta_raw) + self.eps
         # normalize average slope to ~1 to stabilize range
-        avg_slope = (slopes * seg_dx).sum(dim=1, keepdim=True) / (seg_dx.sum(dim=1, keepdim=True) + 1e-8)
+        avg_slope = (slopes * seg_dx).sum(dim=1, keepdim=True) / (
+            seg_dx.sum(dim=1, keepdim=True) + 1e-8
+        )
         slopes = slopes / (avg_slope + 1e-8)
 
         yk = torch.zeros(xk.shape[0], xk.shape[1], device=xk.device, dtype=xk.dtype)
@@ -107,13 +123,15 @@ class PWLSpline(nn.Module):
             # make both inputs contiguous before bucketize/searchsorted
             xj = x[:, j].contiguous()
             xkj = xk[j].contiguous()
-            idx = torch.searchsorted(xkj, xj, right=False)  # equivalent to bucketize on sorted
+            idx = torch.searchsorted(
+                xkj, xj, right=False
+            )  # equivalent to bucketize on sorted
             idx = torch.clamp(idx, 1, K - 1)
             i0 = idx - 1
 
             x0 = xkj[i0]
             y0 = yk[j, i0]
-            m  = slopes[j, i0]
+            m = slopes[j, i0]
             yj = y0 + m * (xj - x0)
             ys.append(yj.unsqueeze(1))
         y = torch.cat(ys, dim=1)
@@ -140,12 +158,13 @@ class PWLSpline(nn.Module):
             i0 = idx - 1
 
             y0 = ykj[i0]
-            m  = slopes[j, i0]
+            m = slopes[j, i0]
             x0 = xk[j, i0]
             xj = x0 + (yj - y0) / (m + 1e-8)
             xs.append(xj.unsqueeze(1))
         x = torch.cat(xs, dim=1)
         return x
+
 
 def build_spline_from_data(x: torch.Tensor, K: int = 7) -> PWLSpline:
     qs = torch.linspace(0.0, 1.0, K, device=x.device, dtype=x.dtype)
@@ -154,9 +173,11 @@ def build_spline_from_data(x: torch.Tensor, K: int = 7) -> PWLSpline:
     xk = x_sorted[idxs, :].T.contiguous()  # [d, K], contiguous to silence warnings
     return PWLSpline(xk)
 
+
 # -------------------------
 # Train & Eval
 # -------------------------
+
 
 def train_spline_for_k(
     spline: PWLSpline,
@@ -170,7 +191,9 @@ def train_spline_for_k(
 ) -> None:
     ds = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(train),
-        batch_size=batch_size, shuffle=True, drop_last=True
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
     )
     opt = torch.optim.AdamW(spline.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -195,9 +218,14 @@ def train_spline_for_k(
                 zt = spline(test)
                 xrt = spline.inverse((zt - mu_z) @ Vk @ Vk.T + mu_z)
                 mse_t = F.mse_loss(xrt, test).item()
-            print(f"[Spline] epoch {ep:02d}  train_mse={np.mean(losses):.6f}  test_mse={mse_t:.6f}")
+            print(
+                f"[Spline] epoch {ep:02d}  train_mse={np.mean(losses):.6f}  test_mse={mse_t:.6f}"
+            )
 
-def evaluate_sweep(train: torch.Tensor, test: torch.Tensor, spline: PWLSpline, ks: List[int]) -> List[dict]:
+
+def evaluate_sweep(
+    train: torch.Tensor, test: torch.Tensor, spline: PWLSpline, ks: List[int]
+) -> List[dict]:
     rows = []
     with torch.no_grad():
         mu_x, Vh_x = pca_fit(train)
@@ -215,23 +243,28 @@ def evaluate_sweep(train: torch.Tensor, test: torch.Tensor, spline: PWLSpline, k
             rows.append({"k": k, "test_mse_PCA": mse_p, "test_mse_SplinePCA": mse_s})
     return rows
 
+
 def print_and_save(rows: List[dict], out_csv: str = "results_spline_pca.csv") -> None:
     print("\n=== Test MSE: PCA vs Spline->PCA (lower is better) ===")
     print(f"{'k':>4}  {'PCA':>14}  {'SplinePCA':>14}  {'delta(SplinePCA-PCA)':>24}")
     for r in rows:
         delta = r["test_mse_SplinePCA"] - r["test_mse_PCA"]
-        print(f"{r['k']:4d}  {r['test_mse_PCA']:14.6f}  {r['test_mse_SplinePCA']:14.6f}  {delta:24.6f}")
+        print(
+            f"{r['k']:4d}  {r['test_mse_PCA']:14.6f}  {r['test_mse_SplinePCA']:14.6f}  {delta:24.6f}"
+        )
 
     with open(out_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["k","test_mse_PCA","test_mse_SplinePCA"])
+        w = csv.DictWriter(f, fieldnames=["k", "test_mse_PCA", "test_mse_SplinePCA"])
         w.writeheader()
         for r in rows:
             w.writerow(r)
     print(f"\nSaved CSV -> {out_csv}")
 
+
 # -------------------------
 # Main
 # -------------------------
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -240,14 +273,23 @@ def main():
     ap.add_argument("--seed", type=int, default=13)
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--k-train", type=int, default=16)
-    ap.add_argument("--k-values", type=str, default="8,12,16,24,32,48,64",
-                    help="Comma-separated k values to test")
-    ap.add_argument("--device", type=str, default="cpu", choices=["cpu","cuda"])
-    ap.add_argument("--fp16", action="store_true", help="run model/data in float16 (on CUDA recommended)")
+    ap.add_argument(
+        "--k-values",
+        type=str,
+        default="8,12,16,24,32,48,64",
+        help="Comma-separated k values to test",
+    )
+    ap.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"])
+    ap.add_argument(
+        "--fp16",
+        action="store_true",
+        help="run model/data in float16 (on CUDA recommended)",
+    )
     ap.add_argument("--knots", type=int, default=7)
     args = ap.parse_args()
 
-    torch.manual_seed(5); np.random.seed(5)
+    torch.manual_seed(5)
+    np.random.seed(5)
 
     X = make_geometric_dataset(n=args.n, d=args.d, seed=args.seed)
     X_train, X_test = X[: int(0.75 * len(X))], X[int(0.75 * len(X)) :]
@@ -264,7 +306,7 @@ def main():
     dtype = torch.float16 if (args.fp16 and want_cuda) else torch.float32
 
     train = torch.tensor(X_train, device=device, dtype=dtype)
-    test  = torch.tensor(X_test,  device=device, dtype=dtype)
+    test = torch.tensor(X_test, device=device, dtype=dtype)
 
     # Build spline with quantile knots from train (match dtype/device)
     spline = build_spline_from_data(train, K=args.knots).to(device=device, dtype=dtype)
@@ -279,9 +321,10 @@ def main():
     )
 
     # Evaluate across a sweep of k
-    ks = [int(k.strip()) for k in args.k_values.split(',')]
+    ks = [int(k.strip()) for k in args.k_values.split(",")]
     rows = evaluate_sweep(train, test, spline, ks)
     print_and_save(rows, out_csv="results_spline_pca.csv")
+
 
 if __name__ == "__main__":
     main()
