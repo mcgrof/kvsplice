@@ -196,6 +196,175 @@ python3 affineflow_pca_experiment.py --epochs 12
 
 This Spline→PCA algorithm has been integrated into [knlp](https://github.com/mcgrof/knlp) as **KVSplice** for KV cache compression in GPT-2 training. See the [knlp docs/ra.md KVSplice section](https://github.com/mcgrof/knlp/blob/main/docs/ra.md) for production implementation details, ablation studies, and usage instructions.
 
+## How It Actually Works: A Detailed Walkthrough
+
+This section clarifies the training process, compression mechanism, and
+evaluation metrics based on the `splinepca.py` implementation.
+
+### What Gets Trained
+
+The **spline is a learned neural network** (`PWLSpline`) with trainable
+parameters:
+- Segment slopes (per dimension, per segment between knots)
+- Output scale and shift parameters
+- Knot positions are **fixed** (initialized from data quantiles)
+
+The spline is **not** pre-computed on all data. Instead, it transforms
+data on-the-fly during training and gets updated via backpropagation.
+
+### The Training Loop (`train_spline_for_k()`, lines 168-210)
+
+The training alternates between two phases each epoch:
+
+#### Phase 1: Compute PCA Target (lines 187-190)
+```python
+with torch.no_grad():
+    z_train = spline(train)           # Transform ALL training data
+    mu_z, Vh_z = pca_fit(z_train)     # Fit PCA on transformed space
+    Vk = Vh_z[:k_target].T            # Keep top-k components [d, k]
+```
+
+This happens **once per epoch** before the batch loop. It computes a
+stable PCA basis in the current spline-transformed space.
+
+**Scaling consideration**: For large datasets (billions of tokens),
+you'd need incremental/streaming PCA here instead of transforming all
+data at once.
+
+#### Phase 2: Mini-Batch Training (lines 193-201)
+```python
+for (x,) in dataloader:               # Iterate over batches
+    z = spline(x)                     # Transform batch through spline
+    zc = (z - mu_z) @ Vk @ Vk.T + mu_z  # Compress & decompress via PCA
+    xr = spline.inverse(zc)           # Inverse spline back to original
+    recon = F.mse_loss(xr, x)         # Reconstruction loss
+    recon.backward()                  # Backprop through spline
+    opt.step()                        # Update spline parameters
+```
+
+The spline learns to warp the data into a space where PCA compression
+(with k dimensions) produces minimal reconstruction error.
+
+### The Compression Bottleneck
+
+**Line 190:** `Vk = Vh_z[:k_target].T` selects only the top k
+principal components out of d total dimensions. This is the key
+compression step.
+
+**Line 195:** Breaking down `(z - mu_z) @ Vk @ Vk.T`:
+1. `(z - mu_z) @ Vk` → Shape: `[batch, d] @ [d, k]` = `[batch, k]`
+   - **This is the compressed representation!**
+   - Only k numbers per sample instead of d
+2. `... @ Vk.T` → Shape: `[batch, k] @ [k, d]` = `[batch, d]`
+   - Decompress back to full dimension
+
+**Compression ratio**: d/k (e.g., 128/16 = 8× compression)
+
+The compressed k-dimensional representation could be stored instead of
+the full d-dimensional data, then reconstructed later using the same
+PCA basis and spline parameters.
+
+### KV Cache Application
+
+In transformer inference, this approach replaces traditional KV
+caching:
+
+**Traditional KV cache:**
+```
+Store: Full key/value tensors [num_tokens, d]
+Memory: num_tokens × d × precision
+```
+
+**Spline+PCA compressed cache:**
+```
+Store: Compressed representation [num_tokens, k] where k << d
+Plus: Shared spline parameters (small overhead)
+Plus: Shared PCA basis Vk [d, k] (small overhead)
+
+Memory: num_tokens × k × precision + overhead
+Compression: d/k ratio (e.g., 128/16 = 8×)
+```
+
+**Inference workflow:**
+```python
+# Compress during forward pass:
+z = spline(kv)                          # Warp to linear space
+kv_compressed = (z - mu_z) @ Vk         # [num_tokens, k] ← store this
+
+# Reconstruct when needed for attention:
+z_reconstructed = kv_compressed @ Vk.T + mu_z
+kv_approx = spline.inverse(z_reconstructed)
+```
+
+### What the Test Metrics Mean
+
+The `evaluate_sweep()` function (lines 212-230) compares two methods
+across different k values:
+
+**Method 1: Pure PCA**
+```python
+mu_x, Vh_x = pca_fit(train)                    # PCA on original data
+xh_p = pca_proj_recon(test, mu_x, Vh_x, k)     # Compress to k, reconstruct
+mse_p = F.mse_loss(xh_p, test).item()          # Measure error
+```
+
+**Method 2: Spline→PCA**
+```python
+z_train = spline(train)                        # Transform through spline
+mu_z, Vh_z = pca_fit(z_train)                  # PCA on transformed data
+z_proj = pca_proj_recon(z_test, mu_z, Vh_z, k) # Compress to k, reconstruct
+xh_spline = spline.inverse(z_proj)             # Inverse back to original
+mse_s = F.mse_loss(xh_spline, test).item()     # Measure error
+```
+
+### Understanding MSE Values
+
+MSE (Mean Squared Error) measures reconstruction quality:
+
+```python
+MSE = average of (reconstructed - original)²
+```
+
+**Interpretation:**
+- **Lower is better** (closer to original)
+- **0.0** = perfect reconstruction
+- MSE values are in squared units of the original data
+
+**Example table:**
+```
+k    PCA       SplinePCA    delta
+8    0.150000  0.045000     -0.105000  ← 3.3× better reconstruction
+16   0.067000  0.012000     -0.055000  ← 5.6× better reconstruction
+```
+
+The **delta column** shows the difference (SplinePCA - PCA):
+- **Negative delta** = SplinePCA wins (lower error)
+- **Zero delta** = Tie
+- **Positive delta** = PCA wins
+
+**In KV cache context**: Lower MSE means less distortion in the
+compressed representation, leading to better attention quality and
+model performance. An 8× compression (k=16, d=128) with MSE=0.012 is
+much more usable than one with MSE=0.067.
+
+### Why Spline→PCA Outperforms PCA
+
+PCA assumes data lies on a **flat (linear) subspace**. When data
+actually lies on a **curved manifold** (common in neural network
+embeddings), PCA's linear approximation introduces unnecessary error.
+
+The spline learns a **monotonic warp** that "straightens out" the
+curved manifold before PCA is applied. In the warped space, the data
+is more linear, so PCA can capture more variance with fewer
+dimensions.
+
+**Visual analogy:**
+- PCA on curved data: Trying to flatten a banana with a flat plane
+- Spline→PCA: First straighten the banana, then flatten it
+
+This is why SplinePCA especially wins at **low k values** (high
+compression) where PCA's linear assumption hurts most.
+
 ## Algorithm Details
 
 For an excellent introduction to spline theory and continuity, see [this video on spline continuity](https://www.youtube.com/watch?v=jvPPXbo87ds).
