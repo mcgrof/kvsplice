@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
 Spline -> PCA vs PCA on a curved synthetic dataset (GeometricMix, d=128).
-
-This version:
-- fixes the non-contiguous warning (makes bucketize/searchsorted inputs contiguous)
-- optional CUDA and FP16
-- prints table and saves CSV
+We make optional CUDA and FP16. This also prints table and saves CSV
 """
 
 import argparse, csv
@@ -14,11 +10,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-# -------------------------
-# Dataset
-# -------------------------
-
 
 def make_geometric_dataset(n: int = 6000, d: int = 128, seed: int = 13) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -50,11 +41,6 @@ def make_geometric_dataset(n: int = 6000, d: int = 128, seed: int = 13) -> np.nd
     X = X / (X.std(axis=0, keepdims=True) + 1e-6)
     X += rng.normal(0, 0.03, X.shape)
     return X.astype(np.float32)
-
-
-# -------------------------
-# PCA helpers
-# -------------------------
 
 
 def pca_fit(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
