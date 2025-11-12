@@ -286,7 +286,7 @@ for epoch in range(epochs):
 
 ## Citation
 
-This work is part of the AdamWPrune project exploring attention mechanism improvements for transformer models.
+This work is part of the [knlp](https://github.com/mcgrof/knlp) project exploring attention mechanism improvements for transformer models.
 
 **Related work:**
 - MLA (Multi-Head Latent Attention): DeepSeek-V2 compression via low-rank projections
@@ -354,7 +354,7 @@ SplinePCA matches or beats PCA at all k values.
 
 ## License
 
-MIT-0 (same as AdamWPrune parent project)
+MIT-0 (same as [knlp](https://github.com/mcgrof/knlp) parent project)
 
 ## Acknowledgments
 
@@ -363,6 +363,6 @@ Research inspired by:
 - Normalizing flows literature (RealNVP, Glow)
 - Geometric manifold learning (diffusion models, VAEs)
 
-Experimental validation on AdamWPrune GPT-2 training infrastructure.
+Experimental validation on [knlp](https://github.com/mcgrof/knlp) GPT-2 training infrastructure.
 
 ---
