@@ -1,6 +1,6 @@
 # KVSplice: Geometric Compression for KV Caches
 
-Experimental repository for learning geometric transformations before PCA compression. This is the research sandbox that produced the **Spline→PCA** algorithm now integrated into the AdamWPrune GPT-2 training pipeline as **KVSplice**.
+Experimental repository for learning geometric transformations before PCA compression. This is the research sandbox that produced the **Spline→PCA** algorithm now integrated into the [knlp](https://github.com/mcgrof/knlp) training pipeline as **KVSplice**.
 
 The name "KVSplice" reflects the core idea: splicing through different geometric manifolds to find better compression paths, inspired by the Fibonacci triangle showing how different number sequences emerge from the same underlying structure.
 
@@ -118,7 +118,7 @@ python3 affineflow_pca_experiment.py --epochs 12
 
 ## Production Integration
 
-This Spline→PCA algorithm has been integrated into [AdamWPrune](https://github.com/mcgrof/AdamWPrune) as **KVSplice** for KV cache compression in GPT-2 training. See the [AdamWPrune docs/ra.md KVSplice section](https://github.com/mcgrof/AdamWPrune/blob/main/docs/ra.md) for production implementation details, ablation studies, and usage instructions.
+This Spline→PCA algorithm has been integrated into [knlp](https://github.com/mcgrof/knlp) as **KVSplice** for KV cache compression in GPT-2 training. See the [knlp docs/ra.md KVSplice section](https://github.com/mcgrof/knlp/blob/main/docs/ra.md) for production implementation details, ablation studies, and usage instructions.
 
 ## Algorithm Details
 
