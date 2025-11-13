@@ -365,6 +365,91 @@ dimensions.
 This is why SplinePCA especially wins at **low k values** (high
 compression) where PCA's linear assumption hurts most.
 
+### Production Viability: The Critical Limitation
+
+The current implementation demonstrates **post-hoc compression** where
+the spline is calibrated on a pre-trained frozen model. While this
+approach shows the technique works in principle, the observed gains
+are extremely small.
+
+**Current experimental results:**
+- k=8: SplinePCA improves MSE by 0.000002 (0.15% improvement)
+- k=16: SplinePCA improves MSE by 0.000007 (0.08% improvement)
+- k=64: No improvement (tie with plain PCA)
+
+These microscopic improvements on synthetic curved data raise the
+question: does 0.08% better reconstruction quality translate to any
+measurable perplexity improvement in real language modeling?
+
+**The fundamental issue with post-hoc compression:**
+
+The model was trained to produce full-resolution KV vectors, then we
+retrofit compression afterward. The model never learned to adapt to
+the compression bottleneck. This is analogous to training someone to
+speak normally, then forcing them to communicate through a narrow
+tube - they struggle because they never learned to project through
+the constraint.
+
+### The Path to Real Production Value: Train-Time Integration
+
+The compelling approach is **training WITH compression from the
+start**, not applying it after the fact.
+
+**Train-time integration approach:**
+```python
+def attention_with_kvsplice(Q, K, V):
+    # Compress V on-the-fly during training
+    V_compressed = compress_kv(V, spline, pca_basis, k)
+
+    # Reconstruct for attention (with compression loss)
+    V_reconstructed = decompress_kv(V_compressed, spline, pca_basis)
+
+    # Compute attention with lossy reconstruction
+    out = softmax(Q @ K.T) @ V_reconstructed
+
+    # Gradients flow through spline AND model weights
+    return out
+```
+
+**Why this could deliver real value:**
+
+1. **Co-adaptation**: Model learns to generate KV vectors that
+compress well. Like quantization-aware training vs post-training
+quantization - the former works far better.
+
+2. **Emergent structure**: Model might self-organize semantic
+information along principal components, minimizing reconstruction
+loss during training.
+
+3. **Regularization effect**: Compression bottleneck acts as
+regularization, preventing overfitting and forcing efficient use of
+KV cache capacity.
+
+4. **Gradient signal**: Model receives feedback about what
+representations survive compression, not just post-hoc retrofitting.
+
+**Expected outcome:**
+
+| Approach | Perplexity Impact | Value Proposition |
+|----------|-------------------|-------------------|
+| **Baseline** | X | No compression |
+| **Post-hoc** (current) | X + 0.5 | Degradation likely exceeds tiny MSE gains |
+| **Train-time** (proposed) | X + 0.1 | Model adapts, minimal quality loss |
+
+If train-time integration achieves 8× memory compression with <0.2
+perplexity degradation, that becomes genuinely production-viable.
+
+**Current status**: This repository demonstrates the post-hoc
+proof-of-concept. Train-time integration remains unexplored but
+represents the most promising path to practical deployment.
+
+**Missing evidence for production adoption:**
+- Actual perplexity measurements on real language modeling tasks
+- Comparison showing spline adds value over plain PCA
+- Demonstration that real transformer embeddings have exploitable
+curved structure
+- Train-time integration experiments with end-to-end gradient flow
+
 ## Algorithm Details
 
 For an excellent introduction to spline theory and continuity, see [this video on spline continuity](https://www.youtube.com/watch?v=jvPPXbo87ds).
